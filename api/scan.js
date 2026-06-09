@@ -8,7 +8,7 @@ async function getTopMovers(alphaKey) {
     .filter(s => {
       const price = parseFloat(s.price);
       const pct = parseFloat(s.change_percentage);
-      return price >= 1 && price <= 50 && pct > 0 && !s.ticker.includes(".");
+      return price >= 2 && price <= 50 && pct > 1 && pct < 25 && !s.ticker.includes(".");
     })
     .slice(0, 6)
     .map(s => ({
@@ -91,10 +91,9 @@ export default async function handler(req, res) {
     const tickers = await getTopMovers(ALPHA_KEY);
 
     if (tickers.length === 0) {
-      return res.status(500).json({ error: "Geen top gainers. Buiten markturen (15:30-22:00 NL)?" });
+      return res.status(500).json({ error: "Geen geschikte aandelen gevonden. Buiten markturen (15:30-22:00 NL) of probeer opnieuw." });
     }
 
-    // Fetch all news + profiles in parallel
     const enriched = await Promise.all(
       tickers.map(async ticker => {
         const [news, profile] = await Promise.all([
@@ -103,15 +102,14 @@ export default async function handler(req, res) {
         ]);
         return {
           ...ticker,
-          name:   profile.name   || ticker.symbol,
-          sector: profile.finnhubIndustry || "—",
-          market: profile.exchange || "NASDAQ",
+          name:   profile.name             || ticker.symbol,
+          sector: profile.finnhubIndustry  || "—",
+          market: profile.exchange         || "NASDAQ",
           news,
         };
       })
     );
 
-    // AI analysis in parallel
     const analyses = await Promise.all(
       enriched.map(async ticker => {
         try {
@@ -129,9 +127,7 @@ export default async function handler(req, res) {
             priceTarget:  analysis.priceTarget  || "—",
             timeframe:    analysis.timeframe    || "—",
           };
-        } catch {
-          return null;
-        }
+        } catch { return null; }
       })
     );
 
