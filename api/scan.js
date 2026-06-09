@@ -1,25 +1,44 @@
-async function getTopMovers(alphaKey) {
-  const url = `https://www.alphavantage.co/query?function=TOP_GAINERS_LOSERS&apikey=${alphaKey}`;
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(`Alpha Vantage HTTP ${r.status}`);
-  const data = await r.json();
-  const gainers = data.top_gainers || [];
-  return gainers
-    .filter(s => {
-      const price = parseFloat(s.price);
-      const pct = parseFloat(s.change_percentage);
-      return price >= 2 && price <= 50 && pct > 1 && pct < 25 && !s.ticker.includes(".");
-    })
-    .slice(0, 6)
-    .map(s => ({
-      symbol:        s.ticker,
-      price:         parseFloat(s.price),
-      changePercent: parseFloat(s.change_percentage),
-      volume:        parseInt(s.volume) || 0,
-      name:          s.ticker,
-      sector:        "—",
-      market:        "NASDAQ/NYSE",
-    }));
+// Stock Scanner - Hybrid: Curated base + Alpha Vantage daily movers
+
+const BASE_WATCHLIST = [
+  "SOUN","LUNR","RKLB","IONQ","ACMR","MARA","HIVE","RXRX","GRRR","CELH",
+  "MBLY","CIFR","ASTS","MVIS","SLDP","GMRS","MNTS","ARQT","SPIR","KRUS",
+  "EVGO","BLNK","CHPT","INDI","AEVA","LAZR","PRAX","VERA","KROS","ADMA",
+  "RVNC","FOLD","AVXL","CORT","IMVT","NRIX","ALEC","ANAB","FLGT","FTRE"
+];
+
+async function getDailyMovers(alphaKey) {
+  try {
+    const url = `https://www.alphavantage.co/query?function=TOP_GAINERS_LOSERS&apikey=${alphaKey}`;
+    const r = await fetch(url);
+    if (!r.ok) return [];
+    const data = await r.json();
+    const gainers = data.top_gainers || [];
+    return gainers
+      .filter(s => {
+        const price = parseFloat(s.price);
+        const pct   = parseFloat(s.change_percentage);
+        const vol   = parseInt(s.volume) || 0;
+        return (
+          price >= 2 && price <= 50 &&
+          pct > 2 && pct < 40 &&
+          vol > 200000 &&
+          !s.ticker.includes(".") &&
+          s.ticker.length <= 5
+        );
+      })
+      .slice(0, 8)
+      .map(s => s.ticker);
+  } catch { return []; }
+}
+
+async function getQuote(symbol, key) {
+  try {
+    const r = await fetch(`https://finnhub.io/api/v1/quote?symbol=${symbol}&token=${key}`);
+    if (!r.ok) return null;
+    const q = await r.json();
+    return q.c > 0 ? q : null;
+  } catch { return null; }
 }
 
 async function getNews(symbol, key) {
@@ -57,10 +76,10 @@ async function analyzeWithAI(ticker, news, anthropicKey) {
         role: "user",
         content:
           `Stock: ${ticker.symbol} (${ticker.name}), ${ticker.sector}.\n` +
-          `Price: $${ticker.price} (+${Number(chg).toFixed(2)}% today)\n` +
+          `Price: $${ticker.price} (${Number(chg).toFixed(2)}% today)\n` +
           `News: ${news || "geen nieuws"}\n\n` +
           `Return ONLY raw JSON:\n` +
-          `{"signal":"BUY","confidence":70,"summary":"2 zinnen NL","catalysts":["a","b"],"risks":["x"],"newsHeadline":"h","priceTarget":"$X-$Y","timeframe":"1-3 months"}\n` +
+          `{"signal":"BUY","confidence":70,"summary":"2 zinnen NL analyse","catalysts":["a","b"],"risks":["x"],"newsHeadline":"h","priceTarget":"$X-$Y","timeframe":"1-3 months"}\n` +
           `signal: STRONG_BUY BUY WATCH NEUTRAL AVOID`
       }]
     })
@@ -83,28 +102,53 @@ export default async function handler(req, res) {
   const FINNHUB_KEY   = process.env.FINNHUB_API_KEY;
   const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
 
-  if (!ALPHA_KEY || !FINNHUB_KEY || !ANTHROPIC_KEY) {
+  if (!FINNHUB_KEY || !ANTHROPIC_KEY) {
     return res.status(500).json({ error: "Missing API keys" });
   }
 
   try {
-    const tickers = await getTopMovers(ALPHA_KEY);
+    const dailyMovers = ALPHA_KEY ? await getDailyMovers(ALPHA_KEY) : [];
+    const combined = [...new Set([...dailyMovers, ...BASE_WATCHLIST])];
 
-    if (tickers.length === 0) {
-      return res.status(500).json({ error: "Geen geschikte aandelen gevonden. Buiten markturen (15:30-22:00 NL) of probeer opnieuw." });
+    const withQuotes = [];
+    for (let i = 0; i < combined.length; i += 10) {
+      const batch = combined.slice(i, i + 10);
+      const quotes = await Promise.all(
+        batch.map(async symbol => {
+          const q = await getQuote(symbol, FINNHUB_KEY);
+          return q ? { symbol, quote: q, isDaily: dailyMovers.includes(symbol) } : null;
+        })
+      );
+      withQuotes.push(...quotes.filter(Boolean));
+    }
+
+    const movers = withQuotes
+      .filter(s => s.quote.c >= 1 && Math.abs(s.quote.dp) > 0.3)
+      .sort((a, b) => {
+        if (a.isDaily && !b.isDaily) return -1;
+        if (!a.isDaily && b.isDaily) return 1;
+        return b.quote.dp - a.quote.dp;
+      })
+      .slice(0, 8);
+
+    if (movers.length === 0) {
+      return res.status(500).json({ error: "Geen bewegende aandelen. Buiten markturen (15:30-22:00 NL)?" });
     }
 
     const enriched = await Promise.all(
-      tickers.map(async ticker => {
+      movers.map(async s => {
         const [news, profile] = await Promise.all([
-          getNews(ticker.symbol, FINNHUB_KEY),
-          getProfile(ticker.symbol, FINNHUB_KEY)
+          getNews(s.symbol, FINNHUB_KEY),
+          getProfile(s.symbol, FINNHUB_KEY)
         ]);
         return {
-          ...ticker,
-          name:   profile.name             || ticker.symbol,
-          sector: profile.finnhubIndustry  || "—",
-          market: profile.exchange         || "NASDAQ",
+          symbol:        s.symbol,
+          name:          profile.name            || s.symbol,
+          sector:        profile.finnhubIndustry || "—",
+          market:        profile.exchange        || "NASDAQ",
+          price:         s.quote.c,
+          changePercent: s.quote.dp,
+          isNewFind:     s.isDaily,
           news,
         };
       })
@@ -145,9 +189,10 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       results,
-      scannedAt: new Date().toISOString(),
-      source: "Alpha Vantage Top Gainers + Claude AI",
-      totalScanned: results.length
+      scannedAt:    new Date().toISOString(),
+      source:       "Alpha Vantage Daily Movers + Curated Watchlist + Claude AI",
+      totalScanned: results.length,
+      newFinds:     results.filter(r => r.isNewFind).length,
     });
 
   } catch(e) {
