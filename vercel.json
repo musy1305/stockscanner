@@ -3,8 +3,8 @@
   "functions": {
     "api/scan.js": { "maxDuration": 60 }
   },
-  "routes": [
-    { "src": "/api/scan", "dest": "/api/scan.js" },
-    { "src": "/(.*)", "dest": "/public/index.html" }
+  "rewrites": [
+    { "source": "/api/scan", "destination": "/api/scan.js" },
+    { "source": "/(.*)", "destination": "/public/index.html" }
   ]
 }
