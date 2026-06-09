@@ -3,16 +3,14 @@ async function getTopMovers(alphaKey) {
   const r = await fetch(url);
   if (!r.ok) throw new Error(`Alpha Vantage HTTP ${r.status}`);
   const data = await r.json();
-  
   const gainers = data.top_gainers || [];
-  
   return gainers
     .filter(s => {
       const price = parseFloat(s.price);
       const pct = parseFloat(s.change_percentage);
       return price >= 1 && price <= 50 && pct > 0 && !s.ticker.includes(".");
     })
-    .slice(0, 10)
+    .slice(0, 6)
     .map(s => ({
       symbol:        s.ticker,
       price:         parseFloat(s.price),
@@ -24,20 +22,20 @@ async function getTopMovers(alphaKey) {
     }));
 }
 
-async function getNews(symbol, finnhubKey) {
+async function getNews(symbol, key) {
   try {
     const to   = new Date().toISOString().split("T")[0];
     const from = new Date(Date.now() - 7*86400000).toISOString().split("T")[0];
-    const r = await fetch(`https://finnhub.io/api/v1/company-news?symbol=${symbol}&from=${from}&to=${to}&token=${finnhubKey}`);
+    const r = await fetch(`https://finnhub.io/api/v1/company-news?symbol=${symbol}&from=${from}&to=${to}&token=${key}`);
     if (!r.ok) return "";
     const arr = await r.json();
     return Array.isArray(arr) ? arr.slice(0,3).map(a=>a.headline).filter(Boolean).join(" | ") : "";
   } catch { return ""; }
 }
 
-async function getSectorProfile(symbol, finnhubKey) {
+async function getProfile(symbol, key) {
   try {
-    const r = await fetch(`https://finnhub.io/api/v1/stock/profile2?symbol=${symbol}&token=${finnhubKey}`);
+    const r = await fetch(`https://finnhub.io/api/v1/stock/profile2?symbol=${symbol}&token=${key}`);
     if (!r.ok) return {};
     return await r.json();
   } catch { return {}; }
@@ -45,8 +43,6 @@ async function getSectorProfile(symbol, finnhubKey) {
 
 async function analyzeWithAI(ticker, news, anthropicKey) {
   const chg = ticker.changePercent ?? 0;
-  const chgStr = `+${Number(chg).toFixed(2)}%`;
-
   const r = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -56,30 +52,24 @@ async function analyzeWithAI(ticker, news, anthropicKey) {
     },
     body: JSON.stringify({
       model: "claude-haiku-4-5-20251001",
-      max_tokens: 400,
+      max_tokens: 350,
       messages: [{
         role: "user",
         content:
-          `Analyze stock ${ticker.symbol} (${ticker.name}), sector: ${ticker.sector}.\n` +
-          `Price: $${ticker.price} (${chgStr} today), Volume: ${(ticker.volume/1e6).toFixed(2)}M\n` +
-          `Recent news: ${news || "geen nieuws"}\n\n` +
+          `Stock: ${ticker.symbol} (${ticker.name}), ${ticker.sector}.\n` +
+          `Price: $${ticker.price} (+${Number(chg).toFixed(2)}% today)\n` +
+          `News: ${news || "geen nieuws"}\n\n` +
           `Return ONLY raw JSON:\n` +
-          `{"signal":"BUY","confidence":70,"summary":"2-3 zinnen NL analyse","catalysts":["a","b","c"],"risks":["x","y"],"newsHeadline":"headline","priceTarget":"$X-$Y","timeframe":"1-3 months"}\n` +
+          `{"signal":"BUY","confidence":70,"summary":"2 zinnen NL","catalysts":["a","b"],"risks":["x"],"newsHeadline":"h","priceTarget":"$X-$Y","timeframe":"1-3 months"}\n` +
           `signal: STRONG_BUY BUY WATCH NEUTRAL AVOID`
       }]
     })
   });
-
   const raw = await r.text();
-  if (!r.ok) {
-    let msg = `Claude HTTP ${r.status}`;
-    try { msg = JSON.parse(raw).error?.message || msg; } catch {}
-    throw new Error(msg);
-  }
+  if (!r.ok) throw new Error(`Claude ${r.status}`);
   const data = JSON.parse(raw);
   const txt = data.content?.[0]?.text || "";
-  const clean = txt.replace(/```json\s*/gi,"").replace(/```\s*/g,"").trim();
-  const match = clean.match(/\{[\s\S]*\}/);
+  const match = txt.replace(/```json\s*/gi,"").replace(/```\s*/g,"").trim().match(/\{[\s\S]*\}/);
   if (!match) throw new Error("No JSON");
   return JSON.parse(match[0]);
 }
@@ -101,40 +91,51 @@ export default async function handler(req, res) {
     const tickers = await getTopMovers(ALPHA_KEY);
 
     if (tickers.length === 0) {
-      return res.status(500).json({ error: "Geen top movers gevonden. Mogelijk buiten markturen (15:30-22:00 NL)." });
+      return res.status(500).json({ error: "Geen top gainers. Buiten markturen (15:30-22:00 NL)?" });
     }
 
-    const results = [];
-    for (const ticker of tickers) {
-      try {
+    // Fetch all news + profiles in parallel
+    const enriched = await Promise.all(
+      tickers.map(async ticker => {
         const [news, profile] = await Promise.all([
           getNews(ticker.symbol, FINNHUB_KEY),
-          getSectorProfile(ticker.symbol, FINNHUB_KEY)
+          getProfile(ticker.symbol, FINNHUB_KEY)
         ]);
-
-        if (profile.name) ticker.name = profile.name;
-        if (profile.finnhubIndustry) ticker.sector = profile.finnhubIndustry;
-        if (profile.exchange) ticker.market = profile.exchange;
-
-        const analysis = await analyzeWithAI(ticker, news, ANTHROPIC_KEY);
-        const valid = ["STRONG_BUY","BUY","WATCH","NEUTRAL","AVOID"];
-
-        results.push({
+        return {
           ...ticker,
-          ok: true,
-          signal:       valid.includes(analysis.signal) ? analysis.signal : "WATCH",
-          confidence:   typeof analysis.confidence === "number" ? Math.max(0,Math.min(100,analysis.confidence)) : 50,
-          summary:      analysis.summary      || "—",
-          catalysts:    Array.isArray(analysis.catalysts) ? analysis.catalysts : [],
-          risks:        Array.isArray(analysis.risks)     ? analysis.risks     : [],
-          newsHeadline: analysis.newsHeadline || "—",
-          priceTarget:  analysis.priceTarget  || "—",
-          timeframe:    analysis.timeframe    || "—",
-        });
-      } catch(e) {
-        // skip silently
-      }
-    }
+          name:   profile.name   || ticker.symbol,
+          sector: profile.finnhubIndustry || "—",
+          market: profile.exchange || "NASDAQ",
+          news,
+        };
+      })
+    );
+
+    // AI analysis in parallel
+    const analyses = await Promise.all(
+      enriched.map(async ticker => {
+        try {
+          const analysis = await analyzeWithAI(ticker, ticker.news, ANTHROPIC_KEY);
+          const valid = ["STRONG_BUY","BUY","WATCH","NEUTRAL","AVOID"];
+          return {
+            ...ticker,
+            ok: true,
+            signal:       valid.includes(analysis.signal) ? analysis.signal : "WATCH",
+            confidence:   typeof analysis.confidence === "number" ? Math.max(0,Math.min(100,analysis.confidence)) : 50,
+            summary:      analysis.summary      || "—",
+            catalysts:    Array.isArray(analysis.catalysts) ? analysis.catalysts : [],
+            risks:        Array.isArray(analysis.risks)     ? analysis.risks     : [],
+            newsHeadline: analysis.newsHeadline || "—",
+            priceTarget:  analysis.priceTarget  || "—",
+            timeframe:    analysis.timeframe    || "—",
+          };
+        } catch {
+          return null;
+        }
+      })
+    );
+
+    const results = analyses.filter(Boolean);
 
     if (results.length === 0) {
       return res.status(500).json({ error: "Geen resultaten. Probeer opnieuw." });
@@ -149,7 +150,7 @@ export default async function handler(req, res) {
     return res.status(200).json({
       results,
       scannedAt: new Date().toISOString(),
-      source: "Alpha Vantage Top Gainers + Finnhub + Claude AI",
+      source: "Alpha Vantage Top Gainers + Claude AI",
       totalScanned: results.length
     });
 
