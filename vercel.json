@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "functions": {
+    "api/scan.js": { "maxDuration": 60 }
+  },
+  "routes": [
+    { "src": "/api/scan", "dest": "/api/scan.js" },
+    { "src": "/(.*)", "dest": "/public/index.html" }
+  ]
+}

@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Signal Scanner</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #080c14; color: #c8d6e5; font-family: 'Courier New', monospace; min-height: 100vh; }
+
+    .header {
+      background: linear-gradient(180deg, #0d1524, #080c14);
+      border-bottom: 1px solid #1a2540;
+      padding: 20px 24px;
+      display: flex; align-items: center; justify-content: space-between;
+      flex-wrap: wrap; gap: 16px;
+      position: sticky; top: 0; z-index: 100;
+    }
+    .label { display: flex; align-items: center; gap: 8px; font-size: 10px; letter-spacing: 3px; color: #3a5070; margin-bottom: 4px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #1a2540; }
+    .dot.live { background: #00ff88; box-shadow: 0 0 8px #00ff88; }
+    .dot.scanning { background: #00ff88; box-shadow: 0 0 8px #00ff88; animation: pulse 1s infinite; }
+    h1 { font-size: 24px; font-weight: 700; letter-spacing: 3px; color: #e8f4ff; }
+    .sub { font-size: 9px; color: #2a4060; margin-top: 3px; }
+    .header-right { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+    .stat { text-align: center; }
+    .stat-label { font-size: 9px; color: #3a5070; letter-spacing: 1px; }
+    .stat-value { font-size: 26px; font-weight: 700; line-height: 1; }
+    .green { color: #00ff88; } .yellow { color: #ffaa00; } .blue { color: #00ccff; } .orange { color: #ffaa00; } .red { color: #ff6666; }
+    .scan-btn { background: linear-gradient(135deg,#00ff88,#00cc66); color: #080c14; border: none; padding: 12px 28px; border-radius: 4px; font-size: 13px; letter-spacing: 3px; font-weight: 700; cursor: pointer; font-family: 'Courier New', monospace; }
+    .scan-btn:disabled { background: #0d1524; color: #3a5070; border: 1px solid #1a2540; cursor: not-allowed; }
+
+    .progress { height: 2px; background: #0d1524; display: none; }
+    .progress.on { display: block; }
+    .progress-fill { height: 100%; background: linear-gradient(90deg,#00ff88,#00ccff); box-shadow: 0 0 6px #00ff88; transition: width 0.5s; width: 0; }
+
+    .filter-bar { padding: 12px 24px; border-bottom: 1px solid #1a2540; display: none; gap: 8px; flex-wrap: wrap; }
+    .filter-bar.on { display: flex; }
+    .fbtn { padding: 6px 14px; border-radius: 3px; font-size: 10px; letter-spacing: 2px; cursor: pointer; font-family: 'Courier New', monospace; border: 1px solid #1a2540; background: transparent; color: #3a5070; }
+    .fbtn.active { border-color: #00ff88; background: #00ff8815; color: #00ff88; }
+
+    .empty { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 60vh; gap: 14px; color: #3a5070; text-align: center; padding: 24px; }
+    .empty-icon { font-size: 48px; opacity: 0.1; }
+    .empty-title { font-size: 13px; letter-spacing: 4px; }
+    .empty-sub { font-size: 10px; color: #2a3550; line-height: 1.9; }
+
+    .loading { display: none; padding: 60px 24px; text-align: center; }
+    .loading.on { display: block; }
+    .loading-title { font-size: 11px; letter-spacing: 3px; color: #3a5070; animation: pulse 1.5s infinite; margin-bottom: 8px; }
+    .loading-sub { font-size: 10px; color: #2a3550; margin-bottom: 24px; line-height: 1.8; }
+    .shimmer { height: 2px; background: #1a2540; border-radius: 1px; overflow: hidden; max-width: 280px; margin: 0 auto; }
+    .shimmer-fill { height: 100%; background: linear-gradient(90deg,transparent,#00ff88,transparent); animation: slide 2s infinite; }
+
+    .err { margin: 20px 24px; padding: 14px 18px; background: #ff444415; border: 1px solid #ff4444; border-radius: 4px; font-size: 11px; color: #ff6666; display: none; }
+    .err.on { display: block; }
+
+    /* GRID */
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 1px; background: #1a2540; margin: 1px; }
+
+    /* CARD */
+    .card { background: #080c14; padding: 20px; cursor: pointer; transition: background 0.15s; border-left: 3px solid #333; position: relative; overflow: hidden; }
+    .card:hover { background: #0a1020; }
+    .card.open { background: #0d1a2e; }
+    .card-glow { position: absolute; top: 0; right: 0; width: 80px; height: 80px; pointer-events: none; }
+
+    .card-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 14px; }
+    .card-symbol { font-size: 22px; font-weight: 700; color: #e8f4ff; letter-spacing: 1px; margin-bottom: 6px; }
+    .badges { display: flex; gap: 5px; flex-wrap: wrap; margin-bottom: 6px; }
+    .badge { font-size: 8px; padding: 2px 6px; border-radius: 2px; border: 1px solid #1a2540; color: #3a5070; }
+    .badge.d { border-color: #2a3a5a; color: #4a6a8a; }
+    .card-name { font-size: 11px; color: #4a6a8a; }
+    .card-sector { font-size: 10px; color: #2a3550; margin-top: 2px; }
+
+    .card-right { text-align: right; flex-shrink: 0; margin-left: 12px; }
+    .sig { font-size: 10px; font-weight: 700; letter-spacing: 1px; padding: 4px 10px; border-radius: 3px; display: inline-block; }
+    .conf { font-size: 10px; color: #3a5070; margin-top: 6px; }
+    .price { font-size: 15px; font-weight: 700; color: #e8f4ff; margin-top: 5px; }
+    .chg { font-size: 10px; margin-left: 4px; }
+
+    .cbar { height: 2px; background: #1a2540; border-radius: 1px; margin-bottom: 14px; }
+    .cfill { height: 100%; border-radius: 1px; transition: width 1.2s; }
+
+    /* SUMMARY SECTION */
+    .summary-box { background: #0a1220; border-radius: 4px; padding: 12px 14px; margin-bottom: 12px; border-left: 2px solid #1a3050; }
+    .summary-text { font-size: 11px; line-height: 1.8; color: #5580aa; }
+    .summary-text.err-text { color: #ff6644; }
+
+    /* NEWS */
+    .news-box { background: #080e1a; border-radius: 4px; padding: 10px 14px; margin-bottom: 12px; }
+    .news-label { font-size: 8px; color: #3a5070; letter-spacing: 2px; margin-bottom: 5px; }
+    .news-text { font-size: 10px; color: #4a6070; line-height: 1.6; }
+
+    /* DETAIL */
+    .detail { border-top: 1px solid #1a2540; margin-top: 4px; padding-top: 16px; display: none; }
+    .detail.open { display: block; }
+
+    .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
+    .metric { background: #0a1220; border-radius: 4px; padding: 10px 12px; }
+    .metric-label { font-size: 8px; color: #3a5070; letter-spacing: 2px; margin-bottom: 5px; }
+    .metric-value { font-size: 16px; font-weight: 700; }
+
+    .list-block { margin-bottom: 14px; }
+    .list-title { font-size: 8px; color: #3a5070; letter-spacing: 2px; margin-bottom: 8px; }
+    .list-item { font-size: 11px; margin-bottom: 6px; line-height: 1.6; display: flex; gap: 8px; }
+    .list-item .bullet { flex-shrink: 0; }
+
+    .disclaimer { padding: 16px 24px; font-size: 9px; color: #2a3550; border-top: 1px solid #1a2540; letter-spacing: 1px; line-height: 1.8; display: none; }
+    .disclaimer.on { display: block; }
+
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+    @keyframes slide { 0%{transform:translateX(-100%)} 100%{transform:translateX(100%)} }
+
+    @media (max-width: 480px) {
+      .header { padding: 14px 16px; }
+      h1 { font-size: 20px; }
+      .grid { grid-template-columns: 1fr; }
+      .card { padding: 16px; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <div class="label">
+      <div class="dot" id="dot"></div>
+      <span>SMALL-CAP INTELLIGENCE · REAL-TIME</span>
+    </div>
+    <h1>SIGNAL SCANNER</h1>
+    <div class="sub" id="subText">Klik SCAN om te starten</div>
+  </div>
+  <div class="header-right">
+    <div class="stat" id="buyWrap" style="display:none">
+      <div class="stat-label">BUY SIGNALEN</div>
+      <div class="stat-value green" id="buyN">0</div>
+    </div>
+    <div class="stat" id="watchWrap" style="display:none">
+      <div class="stat-label">WATCH LIST</div>
+      <div class="stat-value yellow" id="watchN">0</div>
+    </div>
+    <button class="scan-btn" id="scanBtn" onclick="runScan()">▶ SCAN MARKT</button>
+  </div>
+</div>
+
+<div class="progress" id="prog"><div class="progress-fill" id="progFill"></div></div>
+
+<div class="filter-bar" id="filterBar">
+  <button class="fbtn active" onclick="setFilter('ALL')"  id="f-ALL">ALLE</button>
+  <button class="fbtn"        onclick="setFilter('BUY')"  id="f-BUY">BUY</button>
+  <button class="fbtn"        onclick="setFilter('WATCH')" id="f-WATCH">WATCH</button>
+  <button class="fbtn"        onclick="setFilter('NEU')"  id="f-NEU">NEUTRAL</button>
+</div>
+
+<div class="err" id="errBox"></div>
+
+<div class="empty" id="empty">
+  <div class="empty-icon">◎</div>
+  <div class="empty-title">KLAAR VOOR SCAN</div>
+  <div class="empty-sub">
+    Live koersen via Finnhub<br>
+    Nieuws van afgelopen 7 dagen<br>
+    AI-analyse via Claude<br>
+    Alle aandelen beschikbaar op DEGIRO
+  </div>
+</div>
+
+<div class="loading" id="loading">
+  <div class="loading-title">AI ANALYSEERT MARKT…</div>
+  <div class="loading-sub">
+    Live koersen ophalen via Finnhub<br>
+    Nieuws analyseren per aandeel<br>
+    Claude geeft signalen op basis van actuele data
+  </div>
+  <div class="shimmer"><div class="shimmer-fill"></div></div>
+</div>
+
+<div class="grid" id="grid"></div>
+<div class="disclaimer" id="disc">⚠ Geen financieel advies. Live data via Finnhub. AI-analyse via Claude Haiku. Handel op eigen risico. DYOR.</div>
+
+<script>
+const API = 'https://musyprojecr.vercel.app/api/scan';
+const C = {
+  STRONG_BUY:{ border:'#00ff88',text:'#00ff88',bg:'#00ff8820',label:'STRONG BUY' },
+  BUY:       { border:'#00cc66',text:'#00cc66',bg:'#00cc6620',label:'BUY'        },
+  WATCH:     { border:'#ffaa00',text:'#ffaa00',bg:'#ffaa0020',label:'WATCH'      },
+  NEUTRAL:   { border:'#666666',text:'#888888',bg:'#66666620',label:'NEUTRAL'    },
+  AVOID:     { border:'#ff4444',text:'#ff4444',bg:'#ff444420',label:'AVOID'      },
+};
+let all=[], filter='ALL', openCard=null;
+
+function setFilter(f){ filter=f; document.querySelectorAll('.fbtn').forEach(b=>b.classList.remove('active')); document.getElementById('f-'+f).classList.add('active'); render(); }
+
+function render(){
+  const shown = all.filter(s=>{
+    if(filter==='BUY')   return s.signal==='BUY'||s.signal==='STRONG_BUY';
+    if(filter==='WATCH') return s.signal==='WATCH';
+    if(filter==='NEU')   return s.signal==='NEUTRAL'||s.signal==='AVOID';
+    return true;
+  });
+  document.getElementById('grid').innerHTML = shown.map(s=>{
+    const c=C[s.signal]||C.NEUTRAL;
+    const chg=s.changePercent;
+    const chgHtml=chg!=null?`<span class="chg ${chg>=0?'green':'red'}">${chg>=0?'+':''}${Number(chg).toFixed(2)}%</span>`:'';
+    const open=openCard===s.symbol;
+    return `
+    <div class="card ${open?'open':''}" style="border-left-color:${c.border}" onclick="toggle('${s.symbol}')">
+      <div class="card-glow" style="background:radial-gradient(circle at top right,${c.border}10,transparent 60%)"></div>
+      <div class="card-top">
+        <div>
+          <div class="card-symbol">${s.symbol}</div>
+          <div class="badges">
+            <span class="badge">${s.market}</span>
+            <span class="badge d">DEGIRO ✓</span>
+          </div>
+          <div class="card-name">${s.name}</div>
+          <div class="card-sector">${s.sector}</div>
+        </div>
+        <div class="card-right">
+          <div class="sig" style="color:${c.text};background:${c.bg};border:1px solid ${c.border}50">${c.label}</div>
+          <div class="conf">Confidence: <strong style="color:${c.text}">${s.confidence}%</strong></div>
+          ${s.price?`<div class="price">$${Number(s.price).toFixed(2)}${chgHtml}</div>`:''}
+        </div>
+      </div>
+
+      <div class="cbar"><div class="cfill" style="width:${s.confidence}%;background:${c.border}"></div></div>
+
+      <div class="summary-box">
+        <div class="summary-text ${s.ok?'':'err-text'}">${s.summary||'—'}</div>
+      </div>
+
+      ${s.newsHeadline&&s.newsHeadline!=='—'?`
+      <div class="news-box">
+        <div class="news-label">📰 RECENT NIEUWS</div>
+        <div class="news-text">${s.newsHeadline}</div>
+      </div>`:''}
+
+      <div class="detail ${open?'open':''}">
+        <div class="metrics">
+          <div class="metric">
+            <div class="metric-label">DOELPRIJS</div>
+            <div class="metric-value blue">${s.priceTarget||'—'}</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">TIJDFRAME</div>
+            <div class="metric-value orange">${s.timeframe||'—'}</div>
+          </div>
+        </div>
+        ${s.catalysts?.length?`
+        <div class="list-block">
+          <div class="list-title">▲ KATALYSATOREN</div>
+          ${s.catalysts.map(c=>`<div class="list-item"><span class="bullet green">+</span><span style="color:#5580aa">${c}</span></div>`).join('')}
+        </div>`:''}
+        ${s.risks?.length?`
+        <div class="list-block">
+          <div class="list-title">▼ RISICO'S</div>
+          ${s.risks.map(r=>`<div class="list-item"><span class="bullet red">−</span><span style="color:#5580aa">${r}</span></div>`).join('')}
+        </div>`:''}
+      </div>
+    </div>`;
+  }).join('');
+
+  const buyN=all.filter(s=>s.signal==='BUY'||s.signal==='STRONG_BUY').length;
+  const watchN=all.filter(s=>s.signal==='WATCH').length;
+  document.getElementById('f-ALL').textContent=`ALLE (${all.length})`;
+  document.getElementById('f-BUY').textContent=`BUY (${buyN})`;
+  document.getElementById('f-WATCH').textContent=`WATCH (${watchN})`;
+  document.getElementById('f-NEU').textContent=`NEUTRAL (${all.filter(s=>s.signal==='NEUTRAL'||s.signal==='AVOID').length})`;
+}
+
+function toggle(sym){ openCard=openCard===sym?null:sym; render(); }
+
+async function runScan(){
+  const btn=document.getElementById('scanBtn');
+  btn.disabled=true; btn.textContent='LADEN…';
+  document.getElementById('empty').style.display='none';
+  document.getElementById('loading').classList.add('on');
+  document.getElementById('errBox').classList.remove('on');
+  document.getElementById('prog').classList.add('on');
+  document.getElementById('dot').className='dot scanning';
+  document.getElementById('grid').innerHTML='';
+  document.getElementById('filterBar').classList.remove('on');
+  document.getElementById('disc').classList.remove('on');
+  document.getElementById('buyWrap').style.display='none';
+  document.getElementById('watchWrap').style.display='none';
+  document.getElementById('progFill').style.width='8%';
+  setTimeout(()=>document.getElementById('progFill').style.width='55%',4000);
+  setTimeout(()=>document.getElementById('progFill').style.width='80%',18000);
+
+  try{
+    const r=await fetch(API);
+    if(!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data=await r.json();
+    if(data.error) throw new Error(data.error);
+    all=data.results||[];
+    document.getElementById('progFill').style.width='100%';
+    setTimeout(()=>{
+      document.getElementById('prog').classList.remove('on');
+      document.getElementById('loading').classList.remove('on');
+      document.getElementById('filterBar').classList.add('on');
+      document.getElementById('disc').classList.add('on');
+      document.getElementById('dot').className='dot live';
+      const buyN=all.filter(s=>s.signal==='BUY'||s.signal==='STRONG_BUY').length;
+      const watchN=all.filter(s=>s.signal==='WATCH').length;
+      document.getElementById('buyN').textContent=buyN;
+      document.getElementById('watchN').textContent=watchN;
+      if(buyN){document.getElementById('buyWrap').style.display='block';}
+      if(watchN){document.getElementById('watchWrap').style.display='block';}
+      document.getElementById('subText').textContent=`Laatste scan: ${new Date().toLocaleTimeString('nl-NL')} · ${all.length} aandelen`;
+      render();
+    },300);
+  } catch(e){
+    document.getElementById('prog').classList.remove('on');
+    document.getElementById('loading').classList.remove('on');
+    document.getElementById('errBox').classList.add('on');
+    document.getElementById('errBox').textContent='✗ '+e.message;
+    document.getElementById('dot').className='dot';
+    document.getElementById('empty').style.display='flex';
+  }
+  btn.disabled=false; btn.textContent='▶ SCAN MARKT';
+}
+</script>
+</body>
+</html>
