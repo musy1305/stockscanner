@@ -1,32 +1,37 @@
 // Stock Scanner API - Dynamic small-cap screener
-// Uses Financial Modeling Prep for screening + Finnhub for news + Claude for analysis
+// Uses Financial Modeling Prep + Finnhub + Claude AI
 
 async function getSmallCapStocks(fmpKey) {
-  const url = `https://financialmodelingprep.com/api/v3/stock-screener?` +
-    `marketCapMoreThan=50000000&marketCapLowerThan=2000000000` +
-    `&volumeMoreThan=500000` +
-    `&isEtf=false&isActivelyTrading=true` +
-    `&exchange=NASDAQ,NYSE` +
-    `&limit=50&apikey=${fmpKey}`;
+  const [gainers, active] = await Promise.all([
+    fetch(`https://financialmodelingprep.com/api/v3/stock_market/gainers?apikey=${fmpKey}`).then(r=>r.json()),
+    fetch(`https://financialmodelingprep.com/api/v3/stock_market/actives?apikey=${fmpKey}`).then(r=>r.json()),
+  ]);
 
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(`FMP screener HTTP ${r.status}`);
-  const stocks = await r.json();
-  if (!Array.isArray(stocks)) throw new Error(`FMP error: ${JSON.stringify(stocks).slice(0,100)}`);
+  const combined = [
+    ...(Array.isArray(gainers) ? gainers : []),
+    ...(Array.isArray(active)  ? active  : []),
+  ];
 
-  return stocks
-    .filter(s => s.symbol && s.companyName && s.price > 0.5)
-    .sort((a, b) => (b.volume || 0) - (a.volume || 0))
+  const seen = new Set();
+  const unique = combined.filter(s => {
+    if (!s.symbol || seen.has(s.symbol)) return false;
+    seen.add(s.symbol);
+    return true;
+  });
+
+  return unique
+    .filter(s => s.price > 1 && s.price < 50 && s.symbol && s.name)
+    .sort((a, b) => Math.abs(b.changesPercentage||0) - Math.abs(a.changesPercentage||0))
     .slice(0, 15)
     .map(s => ({
-      symbol:  s.symbol,
-      name:    s.companyName,
-      sector:  s.sector || "Unknown",
-      market:  s.exchangeShortName || "NASDAQ",
-      price:   s.price,
-      volume:  s.volume,
-      marketCap: s.marketCap,
-      changePercent: s.changesPercentage,
+      symbol:        s.symbol,
+      name:          s.name,
+      sector:        s.sector || "Unknown",
+      market:        s.exchange || "NASDAQ",
+      price:         s.price,
+      volume:        s.volume || 0,
+      marketCap:     s.marketCap || null,
+      changePercent: s.changesPercentage || 0,
     }));
 }
 
@@ -107,8 +112,12 @@ export default async function handler(req, res) {
 
   try {
     const tickers = await getSmallCapStocks(FMP_KEY);
-    const results = [];
 
+    if (tickers.length === 0) {
+      return res.status(500).json({ error: "Geen aandelen gevonden. Mogelijk buiten markturen." });
+    }
+
+    const results = [];
     for (const ticker of tickers) {
       try {
         const [quote, news] = await Promise.all([
@@ -160,7 +169,7 @@ export default async function handler(req, res) {
     return res.status(200).json({
       results,
       scannedAt: new Date().toISOString(),
-      source: "FMP Screener + Finnhub + Claude AI",
+      source: "FMP Gainers/Actives + Finnhub + Claude AI",
       totalScanned: tickers.length
     });
 
