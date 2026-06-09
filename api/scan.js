@@ -1,22 +1,24 @@
-// Stock Scanner API - Finnhub screener + Claude AI
-// Fully dynamic - no fixed ticker list
-
 async function getDynamicTickers(finnhubKey) {
   const url = `https://finnhub.io/api/v1/stock/symbol?exchange=US&token=${finnhubKey}`;
   const r = await fetch(url);
   if (!r.ok) throw new Error(`Finnhub symbols HTTP ${r.status}`);
   const all = await r.json();
-  if (!Array.isArray(all)) throw new Error("Geen symbolen ontvangen van Finnhub");
+  if (!Array.isArray(all)) throw new Error("Geen symbolen ontvangen");
 
+  // Only real NASDAQ/NYSE stocks, no OTC, no foreign listings
   const filtered = all.filter(s =>
     s.type === "Common Stock" &&
     s.symbol &&
     !s.symbol.includes(".") &&
-    s.symbol.length <= 5
+    !s.symbol.includes("-") &&
+    s.symbol.length <= 4 &&
+    (s.mic === "XNAS" || s.mic === "XNYS")
   );
 
-  const shuffled = filtered.sort(() => Math.random() - 0.5).slice(0, 60);
+  // Take random 80 candidates
+  const shuffled = filtered.sort(() => Math.random() - 0.5).slice(0, 80);
 
+  // Fetch quotes in batches of 10
   const withQuotes = [];
   for (let i = 0; i < shuffled.length; i += 10) {
     const batch = shuffled.slice(i, i + 10);
@@ -32,22 +34,26 @@ async function getDynamicTickers(finnhubKey) {
     withQuotes.push(...quotes);
   }
 
+  // Filter: price $2-$30, positive momentum today (>1%), has volume
   const active = withQuotes.filter(s =>
-    s.quote.c > 1 &&
-    s.quote.c < 50 &&
-    s.quote.dp != null &&
-    Math.abs(s.quote.dp) > 0.5
+    s.quote.c >= 2 &&
+    s.quote.c <= 30 &&
+    s.quote.dp > 1 &&
+    s.quote.v > 100000 &&
+    s.quote.c > s.quote.pc
   );
 
-  active.sort((a, b) => Math.abs(b.quote.dp) - Math.abs(a.quote.dp));
+  // Sort by % change descending
+  active.sort((a, b) => b.quote.dp - a.quote.dp);
 
   return active.slice(0, 8).map(s => ({
     symbol:        s.symbol,
     name:          s.description || s.symbol,
     sector:        "—",
-    market:        s.mic === "XNAS" ? "NASDAQ" : s.mic === "XNYS" ? "NYSE" : "US",
+    market:        s.mic === "XNAS" ? "NASDAQ" : "NYSE",
     price:         s.quote.c,
     changePercent: s.quote.dp,
+    volume:        s.quote.v,
   }));
 }
 
@@ -72,7 +78,7 @@ async function getSectorProfile(symbol, key) {
 
 async function analyzeWithAI(ticker, news, anthropicKey) {
   const chg = ticker.changePercent ?? 0;
-  const chgStr = `${chg >= 0 ? "+" : ""}${Number(chg).toFixed(2)}%`;
+  const chgStr = `+${Number(chg).toFixed(2)}%`;
 
   const r = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -88,7 +94,7 @@ async function analyzeWithAI(ticker, news, anthropicKey) {
         role: "user",
         content:
           `Analyze stock ${ticker.symbol} (${ticker.name}), sector: ${ticker.sector}, exchange: ${ticker.market}.\n` +
-          `Current price: $${ticker.price} (${chgStr} today)\n` +
+          `Current price: $${ticker.price} (${chgStr} today), Volume: ${(ticker.volume/1e6).toFixed(2)}M\n` +
           `Recent news: ${news || "geen nieuws gevonden"}\n\n` +
           `Return ONLY raw JSON, no markdown:\n` +
           `{"signal":"BUY","confidence":70,"summary":"2-3 zinnen Nederlandse analyse","catalysts":["a","b","c"],"risks":["x","y"],"newsHeadline":"headline","priceTarget":"$X-$Y","timeframe":"1-3 months"}\n` +
@@ -121,11 +127,7 @@ export default async function handler(req, res) {
   const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
 
   if (!FINNHUB_KEY || !ANTHROPIC_KEY) {
-    return res.status(500).json({
-      error: "Missing API keys",
-      finnhub: !!FINNHUB_KEY,
-      anthropic: !!ANTHROPIC_KEY
-    });
+    return res.status(500).json({ error: "Missing API keys" });
   }
 
   try {
@@ -146,6 +148,17 @@ export default async function handler(req, res) {
         if (profile.finnhubIndustry) ticker.sector = profile.finnhubIndustry;
         if (profile.name) ticker.name = profile.name;
 
+        // Skip if market cap too large (>$2B) or too small (<$50M)
+        if (profile.marketCapitalization) {
+          const mcapM = profile.marketCapitalization;
+          if (mcapM > 2000 || mcapM < 50) {
+            continue;
+          }
+        }
+
+        // Skip if no recent news
+        if (!news) continue;
+
         const analysis = await analyzeWithAI(ticker, news, ANTHROPIC_KEY);
         const valid = ["STRONG_BUY","BUY","WATCH","NEUTRAL","AVOID"];
 
@@ -162,13 +175,12 @@ export default async function handler(req, res) {
           timeframe:    analysis.timeframe    || "—",
         });
       } catch(e) {
-        results.push({
-          ...ticker, ok: false,
-          signal: "NEUTRAL", confidence: 0,
-          summary: e.message, catalysts: [], risks: [],
-          newsHeadline: "—", priceTarget: "—", timeframe: "—"
-        });
+        // Skip failed tickers silently
       }
+    }
+
+    if (results.length === 0) {
+      return res.status(500).json({ error: "Geen geschikte small-caps gevonden met nieuws. Probeer opnieuw." });
     }
 
     const order = { STRONG_BUY: 0, BUY: 1, WATCH: 2, NEUTRAL: 3, AVOID: 4 };
@@ -180,8 +192,8 @@ export default async function handler(req, res) {
     return res.status(200).json({
       results,
       scannedAt: new Date().toISOString(),
-      source: "Finnhub Dynamic Screener + Claude AI",
-      totalScanned: tickers.length
+      source: "Finnhub NASDAQ/NYSE + Claude AI",
+      totalScanned: results.length
     });
 
   } catch(e) {
