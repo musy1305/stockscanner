@@ -41,7 +41,7 @@ async function getDynamicTickers(finnhubKey) {
 
   active.sort((a, b) => Math.abs(b.quote.dp) - Math.abs(a.quote.dp));
 
-  return active.slice(0, 15).map(s => ({
+  return active.slice(0, 8).map(s => ({
     symbol:        s.symbol,
     name:          s.description || s.symbol,
     sector:        "—",
